@@ -1,8 +1,9 @@
 import { Server } from "socket.io"
+import { Message } from "../models/message.model.js"
 
-
+// kept in memory only to track who's in which room right now — chat
+// content itself is persisted to MongoDB via the Message model below.
 let connections = {}
-let messages = {}
 let timeOnline = {}
 
 export const connectToSocket = (server) => {
@@ -20,7 +21,7 @@ export const connectToSocket = (server) => {
 
         console.log("SOMETHING CONNECTED")
 
-        socket.on("join-call", (path) => {
+        socket.on("join-call", async (path) => {
 
             if (connections[path] === undefined) {
                 connections[path] = []
@@ -29,19 +30,19 @@ export const connectToSocket = (server) => {
 
             timeOnline[socket.id] = new Date();
 
-            // connections[path].forEach(elem => {
-            //     io.to(elem)
-            // })
-
             for (let a = 0; a < connections[path].length; a++) {
                 io.to(connections[path][a]).emit("user-joined", socket.id, connections[path])
             }
 
-            if (messages[path] !== undefined) {
-                for (let a = 0; a < messages[path].length; ++a) {
-                    io.to(socket.id).emit("chat-message", messages[path][a]['data'],
-                        messages[path][a]['sender'], messages[path][a]['socket-id-sender'])
-                }
+            // Replay chat history from the database (persists across
+            // server restarts, unlike the old in-memory-only version).
+            try {
+                const history = await Message.find({ meetingCode: path }).sort({ date: 1 }).limit(200)
+                history.forEach((m) => {
+                    io.to(socket.id).emit("chat-message", m.data, m.sender, m.socketId, m.date)
+                })
+            } catch (e) {
+                console.log("Failed to load chat history:", e)
             }
 
         })
@@ -50,7 +51,7 @@ export const connectToSocket = (server) => {
             io.to(toId).emit("signal", socket.id, message);
         })
 
-        socket.on("chat-message", (data, sender) => {
+        socket.on("chat-message", async (data, sender) => {
 
             const [matchingRoom, found] = Object.entries(connections)
                 .reduce(([room, isFound], [roomKey, roomValue]) => {
@@ -65,15 +66,24 @@ export const connectToSocket = (server) => {
                 }, ['', false]);
 
             if (found === true) {
-                if (messages[matchingRoom] === undefined) {
-                    messages[matchingRoom] = []
+                const date = new Date();
+
+                try {
+                    await Message.create({
+                        meetingCode: matchingRoom,
+                        sender,
+                        data,
+                        socketId: socket.id,
+                        date,
+                    })
+                } catch (e) {
+                    console.log("Failed to persist chat message:", e)
                 }
 
-                messages[matchingRoom].push({ 'sender': sender, "data": data, "socket-id-sender": socket.id })
                 console.log("message", matchingRoom, ":", sender, data)
 
                 connections[matchingRoom].forEach((elem) => {
-                    io.to(elem).emit("chat-message", data, sender, socket.id)
+                    io.to(elem).emit("chat-message", data, sender, socket.id, date)
                 })
             }
 
@@ -117,4 +127,6 @@ export const connectToSocket = (server) => {
 
     return io;
 }
+
+
 

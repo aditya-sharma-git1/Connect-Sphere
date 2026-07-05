@@ -4,5 +4,6 @@ const server = IS_PROD ?
 
     "http://localhost:8000"
 
+export const livekitUrl = "wss://connect-sphere-i5olevbr.livekit.cloud"
 
 export default server;
